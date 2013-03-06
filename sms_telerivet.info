@@ -1,0 +1,7 @@
+name = "Telerivet SMS"
+description = "SMS Framework gateway module for Telerivet Android app."
+package = SMS Framework
+core = 7.x
+dependencies[] = sms
+dependencies[] = voip
+

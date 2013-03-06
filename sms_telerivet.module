@@ -1,0 +1,171 @@
+<?php
+
+/**
+ * Implements hook_menu().
+ */
+function sms_telerivet_menu() {
+  $items['sms/telerivet'] = array(
+    'access callback' => TRUE,
+    'page callback' => 'sms_telerivet_callback',
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Telerivet callback.
+ */
+function sms_telerivet_callback() {
+  watchdog("sms_telerivet", "post" .print_r($_POST,true));
+  if (empty($_POST)) {
+    return MENU_ACCESS_DENIED;
+  }
+
+  $settings = variable_get('sms_telerivet_settings', array('secret' => ''));
+
+  if (!isset($settings['secret']) || ($settings['secret'] !== $_POST['secret'])) {
+    return MENU_ACCESS_DENIED;
+  }
+
+  $event = $_POST['event'];
+  switch ($event) {
+    case 'incoming_message':
+      $message_type = $_POST['message_type'];
+      switch ($message_type) {
+        case 'sms':
+          sms_incoming($_POST['from_number'], $_POST['content'], array('gw_number' => $_POST['to_number']));
+          break;
+        case 'mms':
+          break;
+        case 'ussd':
+          break;
+        case 'call':
+          //Callback the user with default outbound script
+          $call = new VoipCall();
+          $dest_number = VoipCall::NormalizeNumber($_POST['from_number']);
+          $call->setDestNumber($dest_number);
+          $call->setCallerName('Telerivet');
+          $call->save();
+          // Dial the call.
+          voip_dial($call);
+          break;
+      }
+    //return 200 OK
+      return;
+    /*case EnvayaSMS::ACTION_OUTGOING:
+      $messages = array();
+      $unclaimed = array();
+      $queue = new SystemQueue('sms_telerivet');
+      while ($item = $queue->claimItem(3600)) {
+        if (!isset($item->data['options']['sms_telerivet_from']) || $item->data['options']['sms_telerivet_from'] == $request->phone_number) {
+          $sms = new EnvayaSMS_OutgoingMessage();
+          $sms->id = $item->item_id;
+          $sms->message = $item->data['message'];
+          $sms->priority = isset($item->data['options']['sms_telerivet_priority']) ? $item->data['options']['sms_telerivet_priority'] : NULL;
+          $sms->to = $item->data['number'];
+          $messages[] = $sms;
+        }
+        else {
+          $unclaimed[] = $item;
+        }
+      }
+      foreach ($unclaimed as $item) {
+        $queue->releaseItem($item);
+      }
+      drupal_add_http_header('Content-Type', $request->get_response_type());
+      print $request->render_response(array(new EnvayaSMS_Event_Send($messages)));
+      return;*/
+    case 'send_status':
+      $number = NULL;
+      // Look up the number from the queue.
+      if ($data = db_query('SELECT data FROM {queue} WHERE name = :name AND item_id = :item_id', array(':name' => 'sms_telerivet', ':item_id' => $_POST['id']))->fetchField()) {
+        $data = unserialize($data);
+        $number = $data['number'];
+      }
+      $queue = new SystemQueue('sms_telerivet');
+      $item = new stdClass();
+      $item->item_id = $_POST['id'];
+      $status = SMS_MSG_STATUS_UNKNOWN;
+      if ($_POST['status'] == 'sent') {
+        $queue->deleteItem($item);
+        $status = SMS_MSG_STATUS_OK;
+      }
+      elseif ($_POST['status'] == 'failed') {
+        $queue->releaseItem($item);
+        $status = SMS_MSG_STATUS_ERROR;
+      }
+      elseif ($_POST['status'] == 'queued') {
+        $status = SMS_MSG_STATUS_QUEUED;
+      }
+      // @todo Figure out what to do for STATUS_CANCELLED.
+      sms_receipt($number, $_POST['id'], $status);
+      return;
+    default:
+      return MENU_NOT_FOUND;
+  }
+}
+
+/**
+ * Telerivet configure form callback.
+ */
+function sms_telerivet_configure_form() {
+  $settings = variable_get('sms_telerivet_settings', array('secret' => ''));
+  $form['secret'] = array(
+    '#title' => t('Service secret'),
+    '#default_value' => $settings['secret'],
+    '#description' => t('Enter the secret you got under Services section in Telerivet.'),
+    '#required' => TRUE,
+    '#type' => 'textfield',
+  );
+  return $form;
+}
+
+/**
+ * Implements hook gateway_info().
+ */
+function sms_telerivet_gateway_info() {
+  return array(
+    'telerivet' => array(
+      'configure form' => 'sms_telerivet_configure_form',
+      'format number' => NULL,
+      'name' => 'TelerivetSMS',
+      'receive' => TRUE,
+      'send' => 'sms_telerivet_send',
+      'send form' => 'sms_telerivet_send_form',
+      'validate number' => NULL,
+    ),
+  );
+}
+
+/**
+ * Implements hook_init().
+ */
+function sms_telerivet_init() {
+  // Build a Drupal-style $_FILES array so transliteration module and
+  // file_save_upload() work.
+  if (!empty($_FILES) && empty($_FILES['files'])) {
+    foreach ($_FILES as $key => $file) {
+      foreach (array('name', 'type', 'tmp_name', 'error', 'size') as $file_element) {
+        $_FILES['files'][$file_element][$key] = $file[$file_element];
+      }
+    }
+  }
+}
+
+/**
+ * SMS Framework send callback.
+ */
+//@todo: implement sending using Telerivet REST API
+function sms_telerivet_send($number, $message, $options) {
+  $queue = new SystemQueue('sms_telerivet');
+  $result['status'] = $queue->createItem(array('number' => $number, 'message' => $message, 'options' => $options));
+  return $result;
+}
+
+/**
+ * SMS Framework send form callback.
+ */
+function sms_telerivet_send_form($required = FALSE) {
+  $form = array();
+  return $form;
+}
